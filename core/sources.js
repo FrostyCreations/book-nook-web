@@ -71,8 +71,10 @@ const gutenberg = {
   id: 'gutenberg',
   name: 'Project Gutenberg',
   blurb: 'Classic books, carefully proofread',
-  async search(words) {
-    const url = query('https://www.gutenberg.org/ebooks/search.opds/', [['query', words]]);
+  browse: true,
+  async search(words, { subject } = {}) {
+    // "s.vampires" asks Gutenberg for books filed under that subject.
+    const url = query('https://www.gutenberg.org/ebooks/search.opds/', [['query', subject ? `s.${subject}` : words]]);
     const feed = await (await libraryFetch(url, { direct: true, accept: 'application/atom+xml' })).text();
     const doc = new DOMParser().parseFromString(feed, 'application/xml');
     const results = [];
@@ -96,15 +98,20 @@ const gutenberg = {
   }
 };
 
-// --- Internet Archive: millions of scanned books. Lending-only titles are left out.
+// --- Internet Archive: millions of scanned books.
+// Only books scanned by libraries are searched. Anyone can upload files to the Archive, and those
+// uploads sometimes include books that are still in copyright, so they are deliberately left out,
+// as are lending-only titles.
+const LIBRARY_SCANS = 'collection:(americana OR toronto OR europeanlibraries OR library_of_congress OR gutenberg)';
 const archive = {
   id: 'archive',
   name: 'Internet Archive',
-  blurb: 'Millions of scanned books',
-  async search(words) {
-    const clean = words.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  blurb: 'Old books scanned by libraries',
+  browse: true,
+  async search(words, { subject } = {}) {
+    const clean = (subject || words).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     if (!clean) return [];
-    const q = `(title:(${clean}) OR creator:(${clean})) AND mediatype:texts`
+    const q = `${subject ? `subject:(${clean})` : `(title:(${clean}) OR creator:(${clean}))`} AND mediatype:texts AND ${LIBRARY_SCANS}`
       + ' AND -collection:(inlibrary) AND -collection:(printdisabled) AND -access-restricted-item:true';
     const url = query('https://archive.org/advancedsearch.php', [['q', q],
       ['fl[]', 'identifier'], ['fl[]', 'title'], ['fl[]', 'creator'], ['fl[]', 'year'], ['fl[]', 'language'],
@@ -139,8 +146,9 @@ const openLibrary = {
   id: 'openlibrary',
   name: 'Open Library',
   blurb: 'Finds free editions of well-known books',
-  async search(words) {
-    const url = query('https://openlibrary.org/search.json', [['q', `${words} ebook_access:public`],
+  browse: true,
+  async search(words, { subject } = {}) {
+    const url = query('https://openlibrary.org/search.json', [['q', `${subject ? `subject:"${subject}"` : words} ebook_access:public`],
       ['fields', 'key,title,author_name,cover_i,first_publish_year,editions,editions.key,editions.title,editions.ia,editions.ebook_access'],
       ['limit', '25']]);
     const data = await json(url, { direct: true });
@@ -278,6 +286,18 @@ const storyWeaver = {
     }));
   }
 };
+
+/** Shelves to browse when she doesn't have a title in mind. `subject` is the library catalogue heading. */
+export const MOODS = [
+  { label: 'Vampires', subject: 'vampires' },
+  { label: 'Gothic romance', subject: 'gothic fiction' },
+  { label: 'Love stories', subject: 'love stories' },
+  { label: 'Fantasy', subject: 'fantasy fiction' },
+  { label: 'Ghost stories', subject: 'ghost stories' },
+  { label: 'Mysteries', subject: 'detective and mystery stories' },
+  { label: 'Adventure', subject: 'adventure stories' },
+  { label: 'Fairy tales', subject: 'fairy tales' }
+];
 
 export const SOURCES = [gutenberg, openLibrary, archive, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
   oapen, bookDash, storyWeaver];
