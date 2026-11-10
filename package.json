@@ -1,0 +1,6 @@
+{
+  "name": "book-nook-web",
+  "private": true,
+  "type": "module",
+  "description": "Book Nook: find free books, scan the ones you own, and read them. A web app for the iPad Home Screen."
+}
