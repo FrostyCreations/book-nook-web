@@ -286,7 +286,8 @@ function resultRow(result) {
         if (findState.busy.has(option.url)) return h('span', { class: 'btn quiet' }, h('span', { class: 'spinner mini' }), 'Getting…');
         return h('button', { class: 'btn main', onclick: () => download(result, option) }, `↓ ${option.label}`);
       }),
-      result.web && h('a', { class: 'btn', href: result.web, target: '_blank', rel: 'noopener' }, result.downloads.length ? 'Website' : 'Open'))));
+      result.web && h('a', { class: `btn ${result.downloads.length ? '' : 'main'}`, href: result.web, target: '_blank', rel: 'noopener' },
+        result.webLabel || (result.downloads.length ? 'Website' : 'Open')))));
 }
 
 function drawResults() {
@@ -337,7 +338,7 @@ function showFind() {
       h('button', { class: 'btn quiet', style: 'margin-top:18px', onclick: () => { findState.searched = false; findState.words = ''; findState.subject = null; findState.run += 1; showFind(); } }, '‹ Shelves and ideas'),
       h('div', { id: 'results' }))
     : h('div', { class: 'stack', style: 'margin-top:26px' },
-      h('p', { class: 'sub' }, 'Everything here is free and legal to keep: older books whose copyright has run out, and newer ones their authors chose to share. Brand-new bestsellers will not be here.'),
+      h('p', { class: 'sub' }, "Everything here is free and legal: older books whose copyright has run out, and newer ones their authors chose to share, are hers to keep. Some newer books can be borrowed through Open Library lending and read online. Most current bestsellers won't be here."),
       h('h3', {}, 'Browse a shelf'),
       h('div', { class: 'chips' }, MOODS.map((mood) => h('button', { class: 'chip', onclick: () => search(mood.label, mood.subject) }, mood.label))),
       h('h3', {}, 'Or try a search'),

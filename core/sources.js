@@ -175,6 +175,41 @@ const openLibrary = {
   }
 };
 
+// --- Open Library lending: newer books that are still in copyright, lent out the way a library lends
+// paper books. She borrows and reads them on the Open Library website with a free account; they can't
+// be downloaded to the shelf. Only English editions are listed.
+const lending = {
+  id: 'lending',
+  name: 'Open Library lending',
+  blurb: 'Newer books to borrow free, like a library',
+  browse: true,
+  async search(words, { subject } = {}) {
+    const url = query('https://openlibrary.org/search.json', [
+      ['q', `${subject ? `subject:"${subject}"` : words} ebook_access:borrowable language:eng`],
+      ['fields', 'key,title,author_name,cover_i,first_publish_year,editions,editions.key,editions.ebook_access,editions.language'],
+      ['limit', '25']]);
+    const data = await json(url, { direct: true });
+    const results = [];
+    for (const doc of data.docs || []) {
+      const edition = ((doc.editions && doc.editions.docs) || [])
+        .find((e) => e.ebook_access === 'borrowable' && (e.language || []).includes('eng') && e.key);
+      if (!edition) continue;
+      results.push({
+        id: `lending:${edition.key}`,
+        title: text(doc.title),
+        author: text(doc.author_name),
+        detail: joined([text(doc.first_publish_year), 'Borrow and read online, free account needed']),
+        source: 'Open Library lending',
+        cover: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null,
+        downloads: [],
+        web: `https://openlibrary.org${edition.key}`,
+        webLabel: 'Borrow'
+      });
+    }
+    return results;
+  }
+};
+
 // --- Wikisource: hand-typed texts from Wikipedia's sister library, exported as EPUB on request.
 const wikisource = (language, languageName) => ({
   id: `wikisource-${language}`,
@@ -299,7 +334,7 @@ export const MOODS = [
   { label: 'Fairy tales', subject: 'fairy tales' }
 ];
 
-export const SOURCES = [gutenberg, openLibrary, archive, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
+export const SOURCES = [gutenberg, openLibrary, archive, lending, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
   oapen, bookDash, storyWeaver];
 
 /** Looks at the first bytes of a file to tell what it really is. Returns 'epub', 'pdf' or null. */
