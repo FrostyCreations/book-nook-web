@@ -1,5 +1,5 @@
 import { store, newId, keepStorage } from './core/store.js';
-import { SOURCES, libraryFetch, sniffFormat } from './core/sources.js';
+import { SOURCES, MOODS, libraryFetch, fetchBookFile, sniffFormat } from './core/sources.js';
 import { openEpub, coverBlob, chapterHTML, buildEpub } from './core/epub.js';
 import { pageText, assemble } from './core/scantext.js';
 import { readPage, SCAN_LANGUAGES } from './core/ocr.js';
@@ -221,23 +221,27 @@ async function showShelf() {
 // ------------------------------------------------------------------------------------------
 // Find Books
 
-const findState = { words: '', groups: [], searched: false, run: 0, busy: new Set(), done: new Set() };
+const findState = { words: '', subject: null, groups: [], searched: false, run: 0, busy: new Set(), done: new Set() };
 const IDEAS = ['Jane Austen', 'Sherlock Holmes', 'Alice in Wonderland', 'Jock of the Bushveld', 'Fairy tales', 'Agatha Christie', 'Sprokies', 'Anne of Green Gables'];
 
 function switchedOff() { return new Set(settings.get('sourcesOff', [])); }
 
-function search(words) {
+/** Searches by title or author. With `subject` (a catalogue heading), browses that shelf instead. */
+function search(words, subject = null) {
   findState.words = words.trim();
+  findState.subject = subject;
   if (!findState.words) return;
   const off = switchedOff();
-  const sources = SOURCES.filter((source) => !off.has(source.id));
+  // Only some libraries can be browsed by subject; a typed search uses all of them.
+  let sources = SOURCES.filter((source) => !off.has(source.id) && (!subject || source.browse));
+  if (subject && !sources.length) sources = SOURCES.filter((source) => source.browse);
   const run = ++findState.run;
   findState.searched = true;
   findState.groups = sources.map((source) => ({ id: source.id, name: source.name, blurb: source.blurb, state: 'loading', results: [], problem: '' }));
   sources.forEach(async (source) => {
     const group = findState.groups.find((g) => g.id === source.id);
     try {
-      group.results = await source.search(findState.words);
+      group.results = await source.search(findState.words, { subject });
       group.state = 'done';
     } catch (error) {
       group.state = 'failed';
@@ -253,10 +257,9 @@ async function download(result, option) {
   findState.busy.add(option.url);
   drawResults();
   try {
-    const response = await libraryFetch(option.url);
-    const blob = await response.blob();
+    const blob = await fetchBookFile(option);
     if (!(await sniffFormat(blob))) throw new Error('The download was not an EPUB or PDF. Try “Website” to open the book on the library’s own page.');
-    const book = await addBook(blob, { title: result.title, author: result.author, source: result.source, coverURL: result.cover });
+    const book = await addBook(blob, { title: result.title, author: result.author, source: result.source, coverURL: result.coverFile || result.cover });
     findState.done.add(option.url);
     toast(`“${book.title}” is on your shelf.`);
   } catch (error) {
@@ -282,17 +285,37 @@ function resultRow(result) {
         if (findState.busy.has(option.url)) return h('span', { class: 'btn quiet' }, h('span', { class: 'spinner mini' }), 'Getting…');
         return h('button', { class: 'btn main', onclick: () => download(result, option) }, `↓ ${option.label}`);
       }),
-      result.web && h('a', { class: 'btn', href: result.web, target: '_blank', rel: 'noopener' }, result.downloads.length ? 'Website' : 'Open'))));
+      result.web && h('a', { class: `btn ${result.downloads.length ? '' : 'main'}`, href: result.web, target: '_blank', rel: 'noopener' },
+        result.webLabel || (result.downloads.length ? 'Website' : 'Open')))));
 }
 
 function drawResults() {
   const holder = $('#results');
   if (!holder) return;
-  holder.replaceChildren(...findState.groups.map((group) => h('section', { class: 'group' },
+  const hideEmpty = settings.get('hideEmpty', true);
+  const section = (group) => h('section', { class: 'group' },
     h('h2', {}, group.name, h('small', {}, group.blurb)),
     group.state === 'loading' ? h('div', { class: 'waiting' }, h('span', { class: 'spinner mini' }), 'Searching…')
       : group.state === 'failed' ? h('p', { class: 'sub', style: 'padding:14px 0' }, group.problem)
-        : group.results.length ? group.results.map(resultRow) : h('p', { class: 'sub', style: 'padding:14px 0' }, 'Nothing found here.'))));
+        : group.results.length ? group.results.map(resultRow) : h('p', { class: 'sub', style: 'padding:14px 0' }, 'Nothing found here.'));
+
+  const withBooks = findState.groups.filter((group) => group.state === 'done' && group.results.length);
+  const waiting = findState.groups.filter((group) => group.state === 'loading');
+  const nothing = findState.groups.filter((group) => group.state === 'failed' || (group.state === 'done' && !group.results.length));
+  const shown = hideEmpty ? [...withBooks, ...waiting] : findState.groups;
+
+  const filter = h('label', { class: 'row', style: 'border-top:0;justify-content:flex-start;gap:12px;margin-top:18px' },
+    h('input', { type: 'checkbox', checked: hideEmpty, onchange: (event) => { settings.set('hideEmpty', event.target.checked); drawResults(); } }),
+    'Only show libraries that found something');
+
+  let summary = null;
+  if (hideEmpty && nothing.length) {
+    const names = nothing.map((group) => group.name).join(', ');
+    summary = h('p', { class: 'sub small', style: 'margin-top:26px' },
+      !withBooks.length && !waiting.length ? 'None of the libraries found anything for that. ' : '',
+      `Nothing from: ${names}.`);
+  }
+  holder.replaceChildren(filter, ...shown.map(section), ...(summary ? [summary] : []));
 }
 
 function showFind() {
@@ -310,10 +333,14 @@ function showFind() {
     } }, source.name)));
 
   const body = findState.searched
-    ? h('div', { id: 'results' })
+    ? h('div', {},
+      h('button', { class: 'btn quiet', style: 'margin-top:18px', onclick: () => { findState.searched = false; findState.words = ''; findState.subject = null; findState.run += 1; showFind(); } }, '‹ Shelves and ideas'),
+      h('div', { id: 'results' }))
     : h('div', { class: 'stack', style: 'margin-top:26px' },
-      h('p', { class: 'sub' }, 'Everything here is free and legal to keep: older books whose copyright has run out, and newer ones their authors chose to share. Brand-new bestsellers will not be here.'),
-      h('h3', {}, 'Try one of these'),
+      h('p', { class: 'sub' }, "Everything here is free and legal: older books whose copyright has run out, and newer ones their authors chose to share, are hers to keep. Some newer books can be borrowed through Open Library lending and read online. Most current bestsellers won't be here."),
+      h('h3', {}, 'Browse a shelf'),
+      h('div', { class: 'chips' }, MOODS.map((mood) => h('button', { class: 'chip', onclick: () => search(mood.label, mood.subject) }, mood.label))),
+      h('h3', {}, 'Or try a search'),
       h('div', { class: 'chips' }, IDEAS.map((idea) => h('button', { class: 'chip', onclick: () => search(idea) }, idea))));
 
   setView(

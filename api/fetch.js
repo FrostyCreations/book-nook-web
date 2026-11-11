@@ -9,7 +9,6 @@ const ALLOWED_HOSTS = [
   'archive.org',
   'openlibrary.org',
   'wikisource.org',
-  'ws-export.wmcloud.org',
   'library.oapen.org',
   'bookdash.org',
   'storyweaver.org.in',

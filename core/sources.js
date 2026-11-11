@@ -11,7 +11,9 @@ export async function libraryFetch(url, { direct = false, accept } = {}) {
   const headers = accept ? { Accept: accept } : {};
   const viaProxy = () => fetch(PROXY + encodeURIComponent(url), { headers });
   const straight = () => fetch(url, { headers });
-  const order = direct ? [straight, viaProxy] : [viaProxy, straight];
+  // The Internet Archive's own browser-friendly addresses never need (or accept) the helper.
+  const browserFriendly = /^https:\/\/archive\.org\/(cors|metadata)\//.test(url);
+  const order = browserFriendly ? [straight] : direct ? [straight, viaProxy] : [viaProxy, straight];
   let lastError = null;
   let lastStatus = 0;
   for (const attempt of order) {
@@ -71,8 +73,10 @@ const gutenberg = {
   id: 'gutenberg',
   name: 'Project Gutenberg',
   blurb: 'Classic books, carefully proofread',
-  async search(words) {
-    const url = query('https://www.gutenberg.org/ebooks/search.opds/', [['query', words]]);
+  browse: true,
+  async search(words, { subject } = {}) {
+    // "s.vampires" asks Gutenberg for books filed under that subject.
+    const url = query('https://www.gutenberg.org/ebooks/search.opds/', [['query', subject ? `s.${subject}` : words]]);
     const feed = await (await libraryFetch(url, { direct: true, accept: 'application/atom+xml' })).text();
     const doc = new DOMParser().parseFromString(feed, 'application/xml');
     const results = [];
@@ -96,15 +100,20 @@ const gutenberg = {
   }
 };
 
-// --- Internet Archive: millions of scanned books. Lending-only titles are left out.
+// --- Internet Archive: millions of scanned books.
+// Only books scanned by libraries are searched. Anyone can upload files to the Archive, and those
+// uploads sometimes include books that are still in copyright, so they are deliberately left out,
+// as are lending-only titles.
+const LIBRARY_SCANS = 'collection:(americana OR toronto OR europeanlibraries OR library_of_congress OR gutenberg)';
 const archive = {
   id: 'archive',
   name: 'Internet Archive',
-  blurb: 'Millions of scanned books',
-  async search(words) {
-    const clean = words.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  blurb: 'Old books scanned by libraries',
+  browse: true,
+  async search(words, { subject } = {}) {
+    const clean = (subject || words).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     if (!clean) return [];
-    const q = `(title:(${clean}) OR creator:(${clean})) AND mediatype:texts`
+    const q = `${subject ? `subject:(${clean})` : `(title:(${clean}) OR creator:(${clean}))`} AND mediatype:texts AND ${LIBRARY_SCANS}`
       + ' AND -collection:(inlibrary) AND -collection:(printdisabled) AND -access-restricted-item:true';
     const url = query('https://archive.org/advancedsearch.php', [['q', q],
       ['fl[]', 'identifier'], ['fl[]', 'title'], ['fl[]', 'creator'], ['fl[]', 'year'], ['fl[]', 'language'],
@@ -126,6 +135,7 @@ const archive = {
         detail: joined([text(doc.year), LANGUAGES[text(doc.language).toLowerCase()] || text(doc.language)]),
         source: 'Internet Archive',
         cover: `https://archive.org/services/img/${id}`,
+        coverFile: archiveCover(doc.identifier),
         downloads,
         web: `https://archive.org/details/${id}`
       });
@@ -139,8 +149,9 @@ const openLibrary = {
   id: 'openlibrary',
   name: 'Open Library',
   blurb: 'Finds free editions of well-known books',
-  async search(words) {
-    const url = query('https://openlibrary.org/search.json', [['q', `${words} ebook_access:public`],
+  browse: true,
+  async search(words, { subject } = {}) {
+    const url = query('https://openlibrary.org/search.json', [['q', `${subject ? `subject:"${subject}"` : words} ebook_access:public`],
       ['fields', 'key,title,author_name,cover_i,first_publish_year,editions,editions.key,editions.title,editions.ia,editions.ebook_access'],
       ['limit', '25']]);
     const data = await json(url, { direct: true });
@@ -157,6 +168,7 @@ const openLibrary = {
         detail: text(doc.first_publish_year),
         source: 'Open Library',
         cover: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : `https://archive.org/services/img/${id}`,
+        coverFile: archiveCover(identifier),
         downloads: [
           { label: 'EPUB (text)', format: 'epub', url: `https://archive.org/download/${id}/${id}.epub` },
           { label: 'PDF (page scans)', format: 'pdf', url: `https://archive.org/download/${id}/${id}.pdf` }],
@@ -167,7 +179,42 @@ const openLibrary = {
   }
 };
 
-// --- Wikisource: hand-typed texts from Wikipedia's sister library, exported as EPUB on request.
+// --- Open Library lending: newer books that are still in copyright, lent out the way a library lends
+// paper books. She borrows and reads them on the Open Library website with a free account; they can't
+// be downloaded to the shelf. Only English editions are listed.
+const lending = {
+  id: 'lending',
+  name: 'Open Library lending',
+  blurb: 'Newer books to borrow free, like a library',
+  browse: true,
+  async search(words, { subject } = {}) {
+    const url = query('https://openlibrary.org/search.json', [
+      ['q', `${subject ? `subject:"${subject}"` : words} ebook_access:borrowable language:eng`],
+      ['fields', 'key,title,author_name,cover_i,first_publish_year,editions,editions.key,editions.ebook_access,editions.language'],
+      ['limit', '25']]);
+    const data = await json(url, { direct: true });
+    const results = [];
+    for (const doc of data.docs || []) {
+      const edition = ((doc.editions && doc.editions.docs) || [])
+        .find((e) => e.ebook_access === 'borrowable' && (e.language || []).includes('eng') && e.key);
+      if (!edition) continue;
+      results.push({
+        id: `lending:${edition.key}`,
+        title: text(doc.title),
+        author: text(doc.author_name),
+        detail: joined([text(doc.first_publish_year), 'Borrow and read online, free account needed']),
+        source: 'Open Library lending',
+        cover: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : null,
+        downloads: [],
+        web: `https://openlibrary.org${edition.key}`,
+        webLabel: 'Borrow'
+      });
+    }
+    return results;
+  }
+};
+
+// --- Wikisource: hand-typed texts from Wikipedia's sister library.
 const wikisource = (language, languageName) => ({
   id: `wikisource-${language}`,
   name: language === 'en' ? 'Wikisource' : `Wikisource (${languageName})`,
@@ -190,8 +237,11 @@ const wikisource = (language, languageName) => ({
         detail: languageName,
         source: this.name,
         cover: null,
-        downloads: [{ label: 'EPUB', format: 'epub', url: query('https://ws-export.wmcloud.org/', [['format', 'epub'], ['lang', language], ['page', page]]) }],
-        web: `https://${language}.wikisource.org/wiki/${encodeURIComponent(page)}`
+        // Wikisource's EPUB maker refuses requests from the app's download helper, so these open on
+        // the website instead. Its "Download" button there gives an EPUB that "Add a file" accepts.
+        downloads: [],
+        web: `https://${language}.wikisource.org/wiki/${encodeURIComponent(page)}`,
+        webLabel: 'Read on Wikisource'
       });
     }
     return results;
@@ -279,7 +329,59 @@ const storyWeaver = {
   }
 };
 
-export const SOURCES = [gutenberg, openLibrary, archive, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
+/** Shelves to browse when she doesn't have a title in mind. `subject` is the library catalogue heading. */
+export const MOODS = [
+  { label: 'Vampires', subject: 'vampires' },
+  { label: 'Gothic romance', subject: 'gothic fiction' },
+  { label: 'Love stories', subject: 'love stories' },
+  { label: 'Fantasy', subject: 'fantasy fiction' },
+  { label: 'Ghost stories', subject: 'ghost stories' },
+  { label: 'Mysteries', subject: 'detective and mystery stories' },
+  { label: 'Adventure', subject: 'adventure stories' },
+  { label: 'Fairy tales', subject: 'fairy tales' }
+];
+
+/**
+ * Internet Archive files are downloaded straight from the Archive by the browser, using the
+ * Archive's browser-friendly address (archive.org/cors/…). The app's download helper can't be used
+ * for them: the Archive turns away requests that come from Vercel.
+ * The Archive's catalogue is asked first for the file's real name.
+ */
+async function archiveFileAddress(identifier, format) {
+  const id = encodeURIComponent(identifier);
+  let name = `${identifier}.${format}`;
+  try {
+    const meta = await json(`https://archive.org/metadata/${id}`, { direct: true });
+    const files = meta.files || [];
+    const pdf = (f) => /\.pdf$/i.test(f.name || '');
+    const file = format === 'epub'
+      ? files.find((f) => f.format === 'EPUB') || files.find((f) => /\.epub$/i.test(f.name || ''))
+      : files.find((f) => f.format === 'Text PDF') || files.find((f) => f.format === 'Additional Text PDF')
+        || files.find((f) => pdf(f) && !/_bw\.pdf$/i.test(f.name)) || files.find(pdf);
+    if (files.length && !file) {
+      throw Object.assign(new Error(format === 'epub'
+        ? 'This edition has no EPUB file. Try its PDF, or another edition.'
+        : 'This edition has no PDF file. Try another edition.'), { final: true });
+    }
+    if (file) name = file.name;
+  } catch (error) {
+    if (error.final) throw error;      // otherwise fall back to the usual file name
+  }
+  return `https://archive.org/cors/${id}/${name.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/** The small cover picture the Archive keeps for every book, at an address the browser may fetch. */
+const archiveCover = (identifier) => `https://archive.org/cors/${encodeURIComponent(identifier)}/__ia_thumb.jpg`;
+
+/** Downloads the file behind a result's download button. Returns a Blob. */
+export async function fetchBookFile(option) {
+  const archived = option.url.match(/^https:\/\/archive\.org\/download\/([^/]+)\//);
+  if (!archived) return (await libraryFetch(option.url)).blob();
+  const address = await archiveFileAddress(decodeURIComponent(archived[1]), option.format);
+  return (await libraryFetch(address)).blob();
+}
+
+export const SOURCES = [gutenberg, openLibrary, archive, lending, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
   oapen, bookDash, storyWeaver];
 
 /** Looks at the first bytes of a file to tell what it really is. Returns 'epub', 'pdf' or null. */

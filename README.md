@@ -15,7 +15,7 @@ Do step 3 before adding any books. The Home Screen app keeps its own storage, so
 | Tab | What it does |
 |---|---|
 | **My Books** | The shelf. Tap a cover to read; it remembers the place. "Add a file" takes EPUB or PDF from the Files app. |
-| **Find Books** | Searches 8 free libraries at once and downloads to the shelf. |
+| **Find Books** | Searches 9 free libraries at once and downloads to the shelf. Newer, in-copyright books show up under Open Library lending, where they can be borrowed and read online with a free account. Shelves (Vampires, Love stories…) browse by subject. |
 | **Scan a Book** | Photograph pages; the words are read in the browser (nothing is uploaded) and become a real EPUB. Picture books become an EPUB of the photos. Scans are kept, so a book can be done over many sittings. |
 | **More Libraries** | 52 more free libraries, opened in Safari. Download there, then "Add a file". |
 
