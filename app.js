@@ -1,5 +1,5 @@
 import { store, newId, keepStorage } from './core/store.js';
-import { SOURCES, MOODS, libraryFetch, sniffFormat } from './core/sources.js';
+import { SOURCES, MOODS, libraryFetch, fetchBookFile, sniffFormat } from './core/sources.js';
 import { openEpub, coverBlob, chapterHTML, buildEpub } from './core/epub.js';
 import { pageText, assemble } from './core/scantext.js';
 import { readPage, SCAN_LANGUAGES } from './core/ocr.js';
@@ -257,10 +257,9 @@ async function download(result, option) {
   findState.busy.add(option.url);
   drawResults();
   try {
-    const response = await libraryFetch(option.url);
-    const blob = await response.blob();
+    const blob = await fetchBookFile(option);
     if (!(await sniffFormat(blob))) throw new Error('The download was not an EPUB or PDF. Try “Website” to open the book on the library’s own page.');
-    const book = await addBook(blob, { title: result.title, author: result.author, source: result.source, coverURL: result.cover });
+    const book = await addBook(blob, { title: result.title, author: result.author, source: result.source, coverURL: result.coverFile || result.cover });
     findState.done.add(option.url);
     toast(`“${book.title}” is on your shelf.`);
   } catch (error) {

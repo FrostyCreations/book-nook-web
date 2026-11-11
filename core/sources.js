@@ -11,7 +11,9 @@ export async function libraryFetch(url, { direct = false, accept } = {}) {
   const headers = accept ? { Accept: accept } : {};
   const viaProxy = () => fetch(PROXY + encodeURIComponent(url), { headers });
   const straight = () => fetch(url, { headers });
-  const order = direct ? [straight, viaProxy] : [viaProxy, straight];
+  // The Internet Archive's own browser-friendly addresses never need (or accept) the helper.
+  const browserFriendly = /^https:\/\/archive\.org\/(cors|metadata)\//.test(url);
+  const order = browserFriendly ? [straight] : direct ? [straight, viaProxy] : [viaProxy, straight];
   let lastError = null;
   let lastStatus = 0;
   for (const attempt of order) {
@@ -133,6 +135,7 @@ const archive = {
         detail: joined([text(doc.year), LANGUAGES[text(doc.language).toLowerCase()] || text(doc.language)]),
         source: 'Internet Archive',
         cover: `https://archive.org/services/img/${id}`,
+        coverFile: archiveCover(doc.identifier),
         downloads,
         web: `https://archive.org/details/${id}`
       });
@@ -165,6 +168,7 @@ const openLibrary = {
         detail: text(doc.first_publish_year),
         source: 'Open Library',
         cover: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : `https://archive.org/services/img/${id}`,
+        coverFile: archiveCover(identifier),
         downloads: [
           { label: 'EPUB (text)', format: 'epub', url: `https://archive.org/download/${id}/${id}.epub` },
           { label: 'PDF (page scans)', format: 'pdf', url: `https://archive.org/download/${id}/${id}.pdf` }],
@@ -210,7 +214,7 @@ const lending = {
   }
 };
 
-// --- Wikisource: hand-typed texts from Wikipedia's sister library, exported as EPUB on request.
+// --- Wikisource: hand-typed texts from Wikipedia's sister library.
 const wikisource = (language, languageName) => ({
   id: `wikisource-${language}`,
   name: language === 'en' ? 'Wikisource' : `Wikisource (${languageName})`,
@@ -233,8 +237,11 @@ const wikisource = (language, languageName) => ({
         detail: languageName,
         source: this.name,
         cover: null,
-        downloads: [{ label: 'EPUB', format: 'epub', url: query('https://ws-export.wmcloud.org/', [['format', 'epub'], ['lang', language], ['page', page]]) }],
-        web: `https://${language}.wikisource.org/wiki/${encodeURIComponent(page)}`
+        // Wikisource's EPUB maker refuses requests from the app's download helper, so these open on
+        // the website instead. Its "Download" button there gives an EPUB that "Add a file" accepts.
+        downloads: [],
+        web: `https://${language}.wikisource.org/wiki/${encodeURIComponent(page)}`,
+        webLabel: 'Read on Wikisource'
       });
     }
     return results;
@@ -333,6 +340,46 @@ export const MOODS = [
   { label: 'Adventure', subject: 'adventure stories' },
   { label: 'Fairy tales', subject: 'fairy tales' }
 ];
+
+/**
+ * Internet Archive files are downloaded straight from the Archive by the browser, using the
+ * Archive's browser-friendly address (archive.org/cors/…). The app's download helper can't be used
+ * for them: the Archive turns away requests that come from Vercel.
+ * The Archive's catalogue is asked first for the file's real name.
+ */
+async function archiveFileAddress(identifier, format) {
+  const id = encodeURIComponent(identifier);
+  let name = `${identifier}.${format}`;
+  try {
+    const meta = await json(`https://archive.org/metadata/${id}`, { direct: true });
+    const files = meta.files || [];
+    const pdf = (f) => /\.pdf$/i.test(f.name || '');
+    const file = format === 'epub'
+      ? files.find((f) => f.format === 'EPUB') || files.find((f) => /\.epub$/i.test(f.name || ''))
+      : files.find((f) => f.format === 'Text PDF') || files.find((f) => f.format === 'Additional Text PDF')
+        || files.find((f) => pdf(f) && !/_bw\.pdf$/i.test(f.name)) || files.find(pdf);
+    if (files.length && !file) {
+      throw Object.assign(new Error(format === 'epub'
+        ? 'This edition has no EPUB file. Try its PDF, or another edition.'
+        : 'This edition has no PDF file. Try another edition.'), { final: true });
+    }
+    if (file) name = file.name;
+  } catch (error) {
+    if (error.final) throw error;      // otherwise fall back to the usual file name
+  }
+  return `https://archive.org/cors/${id}/${name.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/** The small cover picture the Archive keeps for every book, at an address the browser may fetch. */
+const archiveCover = (identifier) => `https://archive.org/cors/${encodeURIComponent(identifier)}/__ia_thumb.jpg`;
+
+/** Downloads the file behind a result's download button. Returns a Blob. */
+export async function fetchBookFile(option) {
+  const archived = option.url.match(/^https:\/\/archive\.org\/download\/([^/]+)\//);
+  if (!archived) return (await libraryFetch(option.url)).blob();
+  const address = await archiveFileAddress(decodeURIComponent(archived[1]), option.format);
+  return (await libraryFetch(address)).blob();
+}
 
 export const SOURCES = [gutenberg, openLibrary, archive, lending, wikisource('en', 'English'), wikisource('af', 'Afrikaans'),
   oapen, bookDash, storyWeaver];
